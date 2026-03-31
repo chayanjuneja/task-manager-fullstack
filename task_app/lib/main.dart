@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'services/task_service.dart';
 import 'dart:async';
-import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const MyApp());
@@ -33,7 +32,6 @@ class _TaskScreenState extends State<TaskScreen> {
   final TaskService _service = TaskService();
 
   final TextEditingController searchController = TextEditingController();
-  final FocusNode searchFocusNode = FocusNode();
   Timer? _debounce;
 
   String searchQuery = "";
@@ -46,27 +44,9 @@ class _TaskScreenState extends State<TaskScreen> {
   String selectedStatus = "To-Do";
   DateTime? selectedDate;
   String? selectedBlockedBy;
+  String recurring = "None";
 
-  // ✅ DRAFT FUNCTIONS
-  Future<void> saveDraft(String title, String desc) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('draft_title', title);
-    await prefs.setString('draft_desc', desc);
-  }
-
-  Future<Map<String, String>> loadDraft() async {
-    final prefs = await SharedPreferences.getInstance();
-    return {
-      "title": prefs.getString('draft_title') ?? "",
-      "desc": prefs.getString('draft_desc') ?? "",
-    };
-  }
-
-  Future<void> clearDraft() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('draft_title');
-    await prefs.remove('draft_desc');
-  }
+  Map<String, String> draft = {"title": "", "desc": ""};
 
   @override
   void initState() {
@@ -80,6 +60,14 @@ class _TaskScreenState extends State<TaskScreen> {
       tasks = data;
       isLoading = false;
     });
+  }
+
+  void saveDraft(String title, String desc) {
+    draft = {"title": title, "desc": desc};
+  }
+
+  Map<String, String> loadDraft() {
+    return draft;
   }
 
   Widget highlightText(String text, String query) {
@@ -135,10 +123,9 @@ class _TaskScreenState extends State<TaskScreen> {
     final desc = TextEditingController();
 
     if (task == null) {
-      loadDraft().then((draft) {
-        title.text = draft["title"]!;
-        desc.text = draft["desc"]!;
-      });
+      final d = loadDraft();
+      title.text = d["title"]!;
+      desc.text = d["desc"]!;
     } else {
       title.text = task['title'] ?? "";
       desc.text = task['description'] ?? "";
@@ -147,6 +134,7 @@ class _TaskScreenState extends State<TaskScreen> {
     selectedStatus = task?['status'] ?? "To-Do";
     selectedDate = task != null ? DateTime.tryParse(task['due_date']) : null;
     selectedBlockedBy = task?['blocked_by'];
+    recurring = task?['recurring'] ?? "None";
 
     showDialog(
       context: context,
@@ -188,22 +176,30 @@ class _TaskScreenState extends State<TaskScreen> {
                         )
                       ],
                     ),
+                    DropdownButtonFormField<String?>(
+  hint: const Text("Select Blocker"),
+  value: selectedBlockedBy,
+  isExpanded: true,
+  items: [
+    const DropdownMenuItem(
+      value: null,
+      child: Text("None"),
+    ),
+    ...tasks.map<DropdownMenuItem<String?>>((t) {
+      return DropdownMenuItem(
+        value: t['id'],
+        child: Text(t['title']),
+      );
+    }).toList(),
+  ],
+  onChanged: (v) => setModal(() => selectedBlockedBy = v),
+),
                     DropdownButtonFormField(
-                      hint: const Text("Blocked By"),
-                      value: selectedBlockedBy,
-                      items: [
-                        const DropdownMenuItem(
-                          value: null,
-                          child: Text("None"),
-                        ),
-                        ...tasks.map<DropdownMenuItem>((t) {
-                          return DropdownMenuItem(
-                            value: t['id'],
-                            child: Text(t['title']),
-                          );
-                        }).toList(),
-                      ],
-                      onChanged: (v) => setModal(() => selectedBlockedBy = v),
+                      value: recurring,
+                      items: ["None", "Daily", "Weekly"]
+                          .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                          .toList(),
+                      onChanged: (v) => setModal(() => recurring = v!),
                     ),
                   ],
                 ),
@@ -221,18 +217,19 @@ class _TaskScreenState extends State<TaskScreen> {
                               "description": desc.text,
                               "due_date": (selectedDate ?? DateTime.now()).toIso8601String(),
                               "status": selectedStatus,
-                              "blocked_by": selectedBlockedBy
+                              "blocked_by": selectedBlockedBy,
+                              "recurring": recurring,
+                              "priority": tasks.length
                             });
-
-                            // ✅ CLEAR DRAFT ONLY AFTER CREATE
-                            await clearDraft();
                           } else {
                             await _service.updateTask(task['id'], {
                               "title": title.text,
                               "description": desc.text,
                               "due_date": (selectedDate ?? DateTime.now()).toIso8601String(),
                               "status": selectedStatus,
-                              "blocked_by": selectedBlockedBy
+                              "blocked_by": selectedBlockedBy,
+                              "recurring": recurring,
+                              "priority": task['priority'] ?? 0
                             });
                           }
 
@@ -241,7 +238,9 @@ class _TaskScreenState extends State<TaskScreen> {
                           Navigator.pop(context);
                           fetchTasks(search: searchQuery, status: filterStatus);
                         },
-                  child: isSaving ? const CircularProgressIndicator() : const Text("Save"),
+                  child: isSaving
+                      ? const CircularProgressIndicator()
+                      : const Text("Save"),
                 )
               ],
             );
@@ -258,13 +257,6 @@ class _TaskScreenState extends State<TaskScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final width = MediaQuery.of(context).size.width;
-
-    int crossAxisCount = 2;
-    if (width > 1200) crossAxisCount = 5;
-    else if (width > 900) crossAxisCount = 4;
-    else if (width > 600) crossAxisCount = 3;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text("Task Manager"),
@@ -284,6 +276,7 @@ class _TaskScreenState extends State<TaskScreen> {
           )
         ],
       ),
+
       body: Column(
         children: [
           Padding(
@@ -303,55 +296,90 @@ class _TaskScreenState extends State<TaskScreen> {
               },
             ),
           ),
+
           Expanded(
-            child: GridView.builder(
-              padding: const EdgeInsets.all(10),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: crossAxisCount,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-              ),
+            child: ReorderableListView.builder(
               itemCount: tasks.length,
+              onReorder: (oldIndex, newIndex) async {
+                if (newIndex > oldIndex) newIndex--;
+
+                final item = tasks.removeAt(oldIndex);
+                tasks.insert(newIndex, item);
+
+                setState(() {});
+
+                await _service.reorderTasks(
+                  tasks.map((e) => e['id'] as String).toList(),
+                );
+              },
               itemBuilder: (_, i) {
                 final t = tasks[i];
 
-                final blockedTask = tasks.where((x) => x['id'] == t['blocked_by']).toList();
+                final blockedTask =
+                    tasks.where((x) => x['id'] == t['blocked_by']).toList();
+
                 final isBlocked = t['blocked_by'] != null &&
-                    (blockedTask.isEmpty || blockedTask.first['status'] != "Done");
+                    (blockedTask.isEmpty ||
+                        blockedTask.first['status'] != "Done");
 
                 return Container(
-                  padding: const EdgeInsets.all(10),
+                  key: ValueKey(t['id']),
+                  margin:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.all(12),
+                  height: 100,
                   decoration: BoxDecoration(
-                    color: isBlocked ? Colors.grey.shade400 : getCardColor(i),
-                    borderRadius: BorderRadius.circular(12),
+                    color: isBlocked
+                        ? Colors.grey.shade400
+                        : getCardColor(i),
+                    borderRadius: BorderRadius.circular(14),
                     boxShadow: const [
                       BoxShadow(
                         color: Colors.black12,
-                        blurRadius: 6,
-                        offset: Offset(0, 3),
+                        blurRadius: 5,
+                        offset: Offset(0, 2),
                       )
                     ],
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  child: Row(
                     children: [
-                      highlightText(t['title'], searchQuery),
-                      const SizedBox(height: 4),
-                      Text(t['description'] ?? "", maxLines: 2, overflow: TextOverflow.ellipsis),
-                      const Spacer(),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment:
+                              CrossAxisAlignment.start,
+                          mainAxisAlignment:
+                              MainAxisAlignment.center,
+                          children: [
+                            highlightText(t['title'], searchQuery),
+                            const SizedBox(height: 4),
+                            Text(
+                              t['description'] ?? "",
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 6),
+                            Text(t['status'],
+                                style: const TextStyle(fontSize: 11)),
+                          ],
+                        ),
+                      ),
+                      Column(
+                        mainAxisAlignment:
+                            MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(t['status'], style: const TextStyle(fontSize: 12)),
+                          const SizedBox(),
                           Row(
                             children: [
                               IconButton(
                                 icon: const Icon(Icons.edit, size: 18),
-                                onPressed: () => openTaskDialog(task: t),
+                                onPressed: () =>
+                                    openTaskDialog(task: t),
                               ),
                               IconButton(
-                                icon: const Icon(Icons.delete, size: 18),
-                                onPressed: () => deleteTask(t['id']),
+                                icon:
+                                    const Icon(Icons.delete, size: 18),
+                                onPressed: () =>
+                                    deleteTask(t['id']),
                               ),
                             ],
                           )
@@ -365,6 +393,7 @@ class _TaskScreenState extends State<TaskScreen> {
           ),
         ],
       ),
+
       floatingActionButton: FloatingActionButton(
         onPressed: () => openTaskDialog(),
         backgroundColor: const Color(0xFFD7E5F0),

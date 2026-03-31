@@ -45,6 +45,14 @@ class TaskService {
     );
   }
 
+  Future<void> reorderTasks(List<String> order) async {
+  await http.put(
+    Uri.parse('$baseUrl/tasks/reorder'),
+    headers: {"Content-Type": "application/json"},
+    body: jsonEncode(order),
+  );
+}
+
   // ✅ DELETE
   Future<void> deleteTask(String id) async {
     await http.delete(
